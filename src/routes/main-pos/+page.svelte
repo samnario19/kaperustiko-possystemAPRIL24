@@ -41,6 +41,9 @@
 
 	let includeServiceCharge = false; // Declare the variable to manage service charge inclusion
 
+	let isTransferPopupVisible = false;
+	let selectedDestinationTable = '';
+
 	type QueuedOrder = {
 		que_order_no: string;
 		receipt_number: string;
@@ -509,7 +512,14 @@
 				seniorDiscount: seniorDiscount,
 				service_charge: includeServiceCharge ? Math.round(totalOrderedItemsPrice * 0.05) : 0,
 				total: Math.round(totalOrderedItemsPrice - Math.round(totalOrderedItemsPrice * voucherDiscount / 100) - Math.round(seniorDiscount) + (includeServiceCharge ? Math.round(totalOrderedItemsPrice * 0.05) : 0)),
+				isBillRequest: true // Add this flag to indicate it's a bill request
 			};
+
+			// Check if there are ordered items before printing
+			if (orderedItems.length === 0) {
+				showAlert('No items ordered yet. Please add items first.', 'error');
+				return;
+			}
 
 			// Log the thermal data to be printed
 			console.log('Thermal Data to be printed:', thermalData); // Log the data
@@ -523,17 +533,13 @@
 			});
 
 			if (!thermalResponse.ok) {
-				throw new Error('Failed to print preview receipt');
+				throw new Error('Failed to print bill request');
 			}
 
-			// Clear waiter name from local storage
-			localStorage.removeItem('waiter_name');
-			console.log('Waiter name cleared from local storage.');
-
-			showAlert('Preview receipt printed successfully!', 'success');
+			showAlert('Bill request printed successfully!', 'success');
 		} catch (error: any) {
 			console.error('Error:', error);
-			showAlert(error.message || 'Failed to print preview receipt.', 'error');
+			showAlert(error.message || 'Failed to print bill request.', 'error');
 		}
 	}
 
@@ -852,6 +858,58 @@
 
 	// Example array of occupied table numbers (this should come from your actual data)
 	let occupiedTableNumbers = ['1', '2', 'O1', 'G1', 'T1']; // Replace with actual occupied table numbers
+
+	// Function to handle table transfer
+	async function handleTransferTable() {
+		try {
+			// Get the orders for the source table
+			const ordersToTransfer = queuedOrders.filter((order) => order.table_number === selectedCard.table);
+			
+			if (ordersToTransfer.length === 0) {
+				showAlert('No orders to transfer', 'error');
+				return;
+			}
+
+			// Check if destination table is occupied
+			const isDestinationOccupied = queuedOrders.some((order) => order.table_number === selectedDestinationTable);
+			
+			if (isDestinationOccupied) {
+				showAlert('Destination table is occupied', 'error');
+				return;
+			}
+
+			// Update each order with the new table number
+			for (const order of ordersToTransfer) {
+				const response = await fetch(
+					'http://localhost/kaperustiko-possystem/backend/modules/update.php?action=updateTableNumber',
+					{
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json'
+						},
+						body: JSON.stringify({
+							receipt_number: order.receipt_number,
+							new_table_number: selectedDestinationTable
+						})
+					}
+				);
+
+				const result = await response.json();
+				
+				if (!response.ok || result.error) {
+					throw new Error(result.error || `Failed to transfer order ${order.receipt_number}`);
+				}
+			}
+
+			showAlert('Table transferred successfully', 'success');
+			isTransferPopupVisible = false;
+			selectedDestinationTable = ''; // Reset the selected destination table
+			await fetchQueuedOrders(); // Refresh the orders
+		} catch (error) {
+			console.error('Error transferring table:', error);
+			showAlert(`Failed to transfer table: ${error.message}`, 'error');
+		}
+	}
 </script>
 
 <div class="flex h-screen">
@@ -1128,6 +1186,14 @@
 								class="w-full max-w-xs rounded-md bg-green-500 px-4 py-2 text-white transition hover:bg-green-600"
 								>Check Out</button
 							>
+							<button
+								on:click={() => {
+									isTransferPopupVisible = true;
+									closeCardPopup();
+								}}
+								class="w-full max-w-xs rounded-md bg-blue-500 px-4 py-2 text-white transition hover:bg-blue-600"
+								>Transfer</button
+							>
 						</div>
 					</div>
 				</div>
@@ -1311,6 +1377,12 @@
 					>
 						Checkout Bill
 					</button>
+					<button
+						on:click={() => previewReceipt()}
+						class="rounded py-3 font-bold text-white bg-green-600 hover:bg-green-700 w-full"
+					>
+						Bill Request
+					</button>
 				</div>
 			</div>
 		</div>
@@ -1464,7 +1536,7 @@
 			<p class="text-lg">Transaction Time: {new Date().toLocaleTimeString()}</p>
 			<p class="text-lg">Cashier Name: {cashierName}</p>
 			<p class="text-lg">Receipt Number: {orderNumber}</p>
-			<p class="text-lg">Waiter Name: {waiterName}</p> <!-- Added waiter name here -->
+			<p class="text-lg">Waiter Name: {waiterName}</p>
 			<p class="text-lg">Table Number: {selectedCard?.table || 'Take Out'}</p>
 
 			<div class="mt-4">
@@ -1561,6 +1633,65 @@
 				>
 					Cancel
 				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if isTransferPopupVisible}
+	<div class="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70">
+		<div class="w-full max-w-md rounded-lg bg-white p-8 shadow-lg">
+			<h2 class="mb-6 text-center text-2xl font-bold text-gray-800">Transfer Table {selectedCard.table}</h2>
+			<select
+				bind:value={selectedDestinationTable}
+				class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200"
+			>
+				<option value="">Select Destination Table</option>
+				<!-- Indoor Tables -->
+				<optgroup label="Indoor Tables">
+					{#each Array(20) as _, index}
+						{#if !queuedOrders.some((order) => order.table_number === (index + 1).toString())}
+							<option value={(index + 1).toString()}>
+								Table {index + 1}
+							</option>
+						{/if}
+					{/each}
+				</optgroup>
+				
+				<!-- Outdoor Tables -->
+				<optgroup label="Outdoor Tables">
+					{#each Array(15) as _, index}
+						{#if !queuedOrders.some((order) => order.table_number === `O${index + 1}`)}
+							<option value={`O${index + 1}`}>
+								Table O{index + 1}
+							</option>
+						{/if}
+					{/each}
+				</optgroup>
+				
+				<!-- Garden Tables -->
+				<optgroup label="Garden Tables">
+					{#each Array(6) as _, index}
+						{#if !queuedOrders.some((order) => order.table_number === `G${index + 1}`)}
+							<option value={`G${index + 1}`}>
+								Table G{index + 1}
+							</option>
+						{/if}
+					{/each}
+				</optgroup>
+			</select>
+			<div class="mt-6 flex justify-between">
+				<button
+					on:click={() => (isTransferPopupVisible = false)}
+					class="rounded-md bg-red-600 px-4 py-2 text-white transition hover:bg-red-700"
+					>Cancel</button
+				>
+				<button
+					on:click={handleTransferTable}
+					class="rounded-md bg-blue-600 px-4 py-2 text-white transition hover:bg-blue-700"
+					disabled={!selectedDestinationTable}
+					>Transfer</button
+				>
 			</div>
 		</div>
 	</div>

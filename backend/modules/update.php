@@ -1,35 +1,50 @@
 <?php
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
+header('Content-Type: application/json');
+
 include '../config/connection.php';
 
-// Check if the request method is POST
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Get the JSON input
-    $input = json_decode(file_get_contents('php://input'), true);
-    error_log(print_r($input, true)); // Log the input for debugging
+if (isset($_GET['action'])) {
+    $action = $_GET['action'];
 
-    // Extract variables
-    $receipt_number = $input['receipt_number'] ?? null;
-    $order_status = $input['order_status'] ?? null;
+    switch ($action) {
+        case 'updateTableNumber':
+            // Get the POST data
+            $data = json_decode(file_get_contents('php://input'), true);
+            
+            if (!isset($data['receipt_number']) || !isset($data['new_table_number'])) {
+                echo json_encode(['error' => 'Missing required parameters']);
+                exit;
+            }
 
-    // Validate input
-    if ($receipt_number && $order_status) {
-        // Prepare the SQL statement
-        $stmt = $conn->prepare("UPDATE que_orders SET order_status = ? WHERE que_order_no = ?");
-        $stmt->bind_param("si", $order_status, $receipt_number);
+            $receipt_number = $data['receipt_number'];
+            $new_table_number = $data['new_table_number'];
 
-        // Execute the statement
-        if ($stmt->execute()) {
-            echo json_encode(['status' => 'success', 'message' => 'Order status updated successfully.']);
-        } else {
-            echo json_encode(['status' => 'error', 'message' => 'Failed to update order status.', 'error' => $stmt->error]);
-        }
+            try {
+                // Update the table number in que_orders table
+                $stmt = $conn->prepare("UPDATE que_orders SET table_number = ? WHERE receipt_number = ?");
+                $stmt->bind_param("ss", $new_table_number, $receipt_number);
+                
+                if ($stmt->execute()) {
+                    echo json_encode(['success' => true, 'message' => 'Table number updated successfully']);
+                } else {
+                    echo json_encode(['error' => 'Failed to update table number']);
+                }
+                
+                $stmt->close();
+            } catch (Exception $e) {
+                echo json_encode(['error' => $e->getMessage()]);
+            }
+            break;
 
-        $stmt->close();
-    } else {
-        echo json_encode(['status' => 'error', 'message' => 'Invalid input.']);
+        default:
+            echo json_encode(['error' => 'Invalid action']);
+            break;
     }
 } else {
-    echo json_encode(['status' => 'error', 'message' => 'Invalid request method.']);
+    echo json_encode(['error' => 'No action specified']);
 }
 
 $conn->close();
