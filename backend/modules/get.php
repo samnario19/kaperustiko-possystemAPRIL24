@@ -1,6 +1,11 @@
 <?php
 include '../config/connection.php';
 
+// Disable display of errors, but continue to log them
+ini_set('display_errors', 0);
+ini_set('display_startup_errors', 0);
+error_reporting(E_ALL);
+
 // Function to get bestsellers
 function getBestsellers($conn)
 {
@@ -962,6 +967,188 @@ function getSalesInformationByCodeAndDate($conn) {
     }
 }
 
+// Function to get Z-report data
+function getZReportData($conn)
+{
+    // Set proper content type header for JSON response
+    header('Content-Type: application/json');
+    
+    try {
+        $date = isset($_GET['date']) ? $_GET['date'] : date('m/d/Y'); // Use today's date if not specified
+        
+        // Log the received date for debugging
+        error_log("Z-Report requested for date: " . $date);
+        
+        // Initialize report data array
+        $reportData = [
+            'printed_date' => date('m/d/Y'),
+            'printed_time' => date('h:i:s A'),
+            'report_date' => $date,
+            'shifts' => [
+                'morning' => ['sales' => 0, 'transactions' => 0],
+                'night' => ['sales' => 0, 'transactions' => 0]
+            ],
+            'gross_sales' => 0,
+            'cash_sales' => 0,
+            'pwd_senior_discount' => 0,
+            'service_charge' => 0,
+            'zero_rated_sales' => 0,
+            'vat_exempted_sales' => 0,
+            'vatable_sales' => 0,
+            'vat' => 0,
+            'start_receipt' => '',
+            'end_receipt' => '',
+            'void_items' => 0,
+            'voided_amount' => 0,
+            'num_transactions' => 0,
+            'net_sales' => 0,
+            'running_total' => 0
+        ];
+
+        // Get morning shift sales
+        $morningShiftSql = "SELECT SUM(total_amount) AS total_sales, COUNT(*) AS transactions 
+                            FROM total_sales 
+                            WHERE date = ? AND cashier_shift = 'Morning Shift'";
+        $stmt = $conn->prepare($morningShiftSql);
+        if (!$stmt) {
+            throw new Exception("Database error: " . $conn->error);
+        }
+        
+        $stmt->bind_param("s", $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $reportData['shifts']['morning']['sales'] = $row['total_sales'] ?: 0;
+            $reportData['shifts']['morning']['transactions'] = $row['transactions'] ?: 0;
+        }
+
+        // Get night shift sales
+        $nightShiftSql = "SELECT SUM(total_amount) AS total_sales, COUNT(*) AS transactions 
+                        FROM total_sales 
+                        WHERE date = ? AND cashier_shift = 'Night Shift'";
+        $stmt = $conn->prepare($nightShiftSql);
+        if (!$stmt) {
+            throw new Exception("Database error: " . $conn->error);
+        }
+        
+        $stmt->bind_param("s", $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $reportData['shifts']['night']['sales'] = $row['total_sales'] ?: 0;
+            $reportData['shifts']['night']['transactions'] = $row['transactions'] ?: 0;
+        }
+
+        // Get gross sales (total of all sales for the date)
+        $grossSalesSql = "SELECT SUM(total_amount) AS gross_sales, COUNT(*) AS num_transactions 
+                        FROM total_sales 
+                        WHERE date = ?";
+        $stmt = $conn->prepare($grossSalesSql);
+        if (!$stmt) {
+            throw new Exception("Database error: " . $conn->error);
+        }
+        
+        $stmt->bind_param("s", $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $reportData['gross_sales'] = $row['gross_sales'] ?: 0;
+            $reportData['num_transactions'] = $row['num_transactions'] ?: 0;
+            $reportData['cash_sales'] = $row['gross_sales'] ?: 0; // Assuming all sales are cash sales for now
+        }
+
+        // Get service charge total
+        $serviceChargeSql = "SELECT SUM(service_charge) AS service_charge_total 
+                            FROM total_sales 
+                            WHERE date = ?";
+        $stmt = $conn->prepare($serviceChargeSql);
+        if (!$stmt) {
+            throw new Exception("Database error: " . $conn->error);
+        }
+        
+        $stmt->bind_param("s", $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $reportData['service_charge'] = $row['service_charge_total'] ?: 0;
+        }
+
+        // Get senior/PWD discounts
+        $discountSql = "SELECT SUM(discount_amount) AS discount_total 
+                        FROM total_sales 
+                        WHERE date = ?";
+        $stmt = $conn->prepare($discountSql);
+        if (!$stmt) {
+            throw new Exception("Database error: " . $conn->error);
+        }
+        
+        $stmt->bind_param("s", $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $reportData['pwd_senior_discount'] = $row['discount_total'] ?: 0;
+        }
+
+        // Calculate VAT (12% of gross sales)
+        $vatableSales = $reportData['gross_sales'] / 1.12; // Remove VAT to get vatable sales
+        $reportData['vatable_sales'] = round($vatableSales, 2);
+        $reportData['vat'] = round($reportData['gross_sales'] - $vatableSales, 2);
+
+        // Get first and last receipt numbers
+        $receiptRangeSql = "SELECT MIN(receipt_number) AS start_receipt, MAX(receipt_number) AS end_receipt 
+                            FROM total_sales 
+                            WHERE date = ?";
+        $stmt = $conn->prepare($receiptRangeSql);
+        if (!$stmt) {
+            throw new Exception("Database error: " . $conn->error);
+        }
+        
+        $stmt->bind_param("s", $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $reportData['start_receipt'] = $row['start_receipt'] ?: 'N/A';
+            $reportData['end_receipt'] = $row['end_receipt'] ?: 'N/A';
+        }
+
+        // Get void information (this would require a separate table for void tracking)
+        // For now, we'll use placeholder values
+        $reportData['void_items'] = 0;
+        $reportData['voided_amount'] = 0;
+
+        // Calculate net sales (gross sales - voids - discounts)
+        $reportData['net_sales'] = $reportData['gross_sales'] - $reportData['voided_amount'] - $reportData['pwd_senior_discount'];
+
+        // Get running total from previous days
+        $runningTotalSql = "SELECT SUM(total_amount) AS running_total 
+                            FROM total_sales 
+                            WHERE STR_TO_DATE(date, '%m/%d/%Y') <= STR_TO_DATE(?, '%m/%d/%Y')";
+        $stmt = $conn->prepare($runningTotalSql);
+        if (!$stmt) {
+            throw new Exception("Database error: " . $conn->error);
+        }
+        
+        $stmt->bind_param("s", $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            $reportData['running_total'] = $row['running_total'] ?: 0;
+        }
+
+        echo json_encode($reportData);
+        
+    } catch (Exception $e) {
+        // Log the error
+        error_log("Error in getZReportData: " . $e->getMessage());
+        
+        // Return a proper JSON error response
+        echo json_encode([
+            'error' => true,
+            'message' => "Failed to generate Z-Report: " . $e->getMessage()
+        ]);
+    }
+}
+
 // Route handling based on request type
 $requestMethod = $_SERVER['REQUEST_METHOD'];
 switch ($requestMethod) {
@@ -1095,6 +1282,9 @@ switch ($requestMethod) {
                     break;
                 case 'getOrderTime':
                     getOrderTime($conn);
+                    break;
+                case 'getZReportData':
+                    getZReportData($conn);
                     break;
                 default:
                     echo json_encode(["status" => "error", "message" => "Invalid action"]);

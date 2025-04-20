@@ -104,11 +104,38 @@
 					if (mergedItems.has(itemKey)) {
 						// If we already have this item, increment quantity and update price
 						const existingItem = mergedItems.get(itemKey);
-						existingItem.order_quantity += item.order_quantity;
-						existingItem.order_price += item.order_price;
+						
+						// Ensure quantities are numbers before adding
+						existingItem.order_quantity = Number(existingItem.order_quantity) + Number(item.order_quantity); 
+						
+						// Recalculate price based on base price, addons, and new quantity
+						const basePrice = Number(existingItem.basePrice || 0); // Use basePrice, ensure number
+						const addonsPrice = (Number(existingItem.order_addons_price || 0)) + 
+											(Number(existingItem.order_addons_price2 || 0)) + 
+											(Number(existingItem.order_addons_price3 || 0));
+                        // Assuming basePrice is per unit and addonsPrice is per unit
+						existingItem.order_price = (basePrice + addonsPrice) * existingItem.order_quantity; // Calculation produces number
+
 					} else {
-						// Otherwise, add the item to our map
-						mergedItems.set(itemKey, { ...item });
+						// Otherwise, add the item to our map, ensuring price/qty are numbers
+						const newItem = { ...item };
+						newItem.order_quantity = Number(newItem.order_quantity);
+						newItem.order_price = Number(newItem.order_price);
+						// Add basePrice if missing, ensure it's a number
+						if (typeof newItem.basePrice === 'undefined') {
+							// Attempt to calculate basePrice if possible, otherwise default or handle error
+							const addonsTotal = (Number(newItem.order_addons_price || 0)) +
+												(Number(newItem.order_addons_price2 || 0)) +
+												(Number(newItem.order_addons_price3 || 0));
+							if (newItem.order_quantity > 0) {
+								newItem.basePrice = (newItem.order_price / newItem.order_quantity) - addonsTotal;
+							} else {
+								newItem.basePrice = 0; // Or handle appropriately
+							}
+						} else {
+							newItem.basePrice = Number(newItem.basePrice);
+						}
+						mergedItems.set(itemKey, newItem);
 					}
 				});
 
@@ -625,14 +652,22 @@
 		if (existingItemIndex !== -1) {
 			// Item exists, update quantity
 			const existingItem = orderedItems[existingItemIndex];
-			const newQuantity = existingItem.order_quantity + quantity; // Update quantity
-			const unitPrice = basePrice + totalAddonsPrice;
+			
+			// Ensure quantities are numbers
+			const currentQuantity = Number(existingItem.order_quantity);
+			const quantityToAdd = Number(quantity);
+			const newQuantity = currentQuantity + quantityToAdd; // Calculation is numeric
+			
+			// Ensure prices are numbers
+			const numericBasePrice = Number(basePrice);
+			const numericTotalAddonsPrice = Number(totalAddonsPrice);
+			const unitPrice = numericBasePrice + numericTotalAddonsPrice;
 
 			// Create updated order data
 			const updatedOrderData = {
 				...existingItem,
-				order_quantity: newQuantity, // Update quantity
-				order_price: unitPrice * newQuantity
+				order_quantity: newQuantity, // Already a number
+				order_price: unitPrice * newQuantity // Calculation produces number
 			};
 
 			// Update state with the new item quantity
@@ -730,16 +765,89 @@
 	}
 
 	// Function to update quantity of an existing item
-	function updateItemQuantity(index: number, newQuantity: number) {
-		// Ensure newQuantity is a proper number
-		newQuantity = parseInt(String(newQuantity), 10);
+	async function updateItemQuantity(index: number, newQuantity: number) { // Make function async
+		newQuantity = Number(newQuantity); // Ensure number
 
 		if (newQuantity < 1) {
-			// If quantity is less than 1, void the item
-			voidOrder(index);
+			voidOrder(index); // Keep void logic separate
 			return;
 		}
 
+		// --- Start of modification ---
+		// 1. Update the item locally
+		const itemsCopy = [...orderedItems]; // Work on a copy
+		const itemToUpdate = { ...itemsCopy[index] }; // Copy the specific item
+
+		const unitPrice = Number(itemToUpdate.basePrice || 0);
+		const addonsPrice =
+			Number(itemToUpdate.order_addons_price || 0) +
+			Number(itemToUpdate.order_addons_price2 || 0) +
+			Number(itemToUpdate.order_addons_price3 || 0);
+
+		itemToUpdate.order_quantity = newQuantity;
+		itemToUpdate.order_price = (unitPrice + addonsPrice) * newQuantity;
+
+		itemsCopy[index] = itemToUpdate; // Put the updated item back into the copied array
+
+		// Update the main state and localStorage immediately for UI feedback
+		orderedItems = itemsCopy;
+		localStorage.setItem('orderedItems', JSON.stringify(orderedItems));
+
+		// 2. Clear all existing temporary orders in the database
+		try {
+			const deleteResponse = await fetch(
+				'http://localhost/kaperustiko-possystem/backend/modules/delete.php?action=deleteAllOrders',
+				{ method: 'DELETE' }
+			);
+			const deleteData = await deleteResponse.json();
+			console.log('Temporary orders cleared before update:', deleteData);
+			if (deleteData.error && deleteData.message !== 'No orders found to delete.') { // Allow 'No orders' message
+				throw new Error('Failed to clear temporary orders: ' + (deleteData.message || deleteData.error));
+			}
+
+
+			// 3. Re-insert all items from the updated local state
+			// Use Promise.all to send insert requests concurrently
+			if (orderedItems.length > 0) { // Only insert if there are items
+				await Promise.all(
+					orderedItems.map(item => {
+						return fetch(
+							'http://localhost/kaperustiko-possystem/backend/modules/insert.php?action=save_order',
+							{
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify(item)
+							}
+						).then(async response => { // Make inner function async to read text body on error
+							if (!response.ok) {
+								const errorText = await response.text();
+								console.error(`Failed to re-insert item: ${item.order_name}`, errorText);
+								// Optionally throw an error to stop Promise.all, or just log it
+								throw new Error(`Failed to insert item ${item.order_name}: ${errorText}`);
+							}
+							return response.json();
+						});
+					})
+				);
+				console.log('All items re-inserted successfully after quantity update.');
+			} else {
+				console.log('No items to re-insert after quantity update.');
+			}
+
+
+			// 4. Fetch orders again to ensure consistency (optional, but good practice)
+			// We might not need this if we trust the local state and the clear/re-insert worked
+			// fetchOrders(); 
+
+		} catch (error) {
+			console.error('Error during quantity update process:', error);
+			// Potentially try to refetch to sync with whatever state the DB might be in
+			fetchOrders();
+		}
+		// --- End of modification ---
+
+
+		/* --- Remove old logic ---
 		const item = orderedItems[index];
 
 		// Create a unique identifier with all relevant details
@@ -768,17 +876,20 @@
 			.then((response) => response.json())
 			.then(() => {
 				// Calculate the unit price (price per item without quantity)
-				const unitPrice = Number(item.basePrice);
+				const unitPrice = Number(item.basePrice || 0); // Ensure number
 				const addonsPrice =
 					Number(item.order_addons_price || 0) +
 					Number(item.order_addons_price2 || 0) +
-					Number(item.order_addons_price3 || 0);
+					Number(item.order_addons_price3 || 0); // Ensure number
+
+				// Ensure newQuantity is a number
+				const numericNewQuantity = Number(newQuantity);
 
 				// Create updated order data with preserved special instructions
 				const updatedOrderData = {
 					...item,
-					order_quantity: newQuantity,
-					order_price: unitPrice * newQuantity + addonsPrice * newQuantity,
+					order_quantity: numericNewQuantity, // Already number
+					order_price: (unitPrice + addonsPrice) * numericNewQuantity, // Corrected calculation, ensure number
 					// Preserve special instructions if they exist
 					special_instructions: item.special_instructions || ''
 				};
@@ -810,7 +921,7 @@
 					.then((data) => {
 						console.log('Order updated:', data.message);
 						localStorage.setItem('orderedItems', JSON.stringify(orderedItems));
-						fetchOrders();
+						fetchOrders(); // <<< Re-fetch orders immediately after saving one item
 					})
 					.catch((error) => {
 						console.error('Error updating order:', error);
@@ -818,9 +929,10 @@
 					});
 			})
 			.catch((error) => {
-				console.error('Error updating order quantity:', error);
+				console.error('Error updating order quantity (during delete):', error);
 				fetchOrders(); // Refresh in case of error
 			});
+		*/
 	}
 
 	function calculateAddonsPrice(addons: string[]): string {
@@ -872,7 +984,63 @@
 		}
 	}
 
-	function voidOrder(index: number) {
+	// Function to void an item
+	async function voidOrder(index: number) { // Make function async
+		// 1. Remove from local array
+		const itemsCopy = [...orderedItems];
+		const orderToVoid = itemsCopy.splice(index, 1)[0]; // Remove and get the voided item
+		orderedItems = itemsCopy; // Update local state
+		localStorage.setItem('orderedItems', JSON.stringify(orderedItems)); // Update localStorage
+
+		// 2. Clear all existing temporary orders in the database
+		try {
+			const deleteResponse = await fetch(
+				'http://localhost/kaperustiko-possystem/backend/modules/delete.php?action=deleteAllOrders',
+				{ method: 'DELETE' }
+			);
+			const deleteData = await deleteResponse.json();
+			console.log('Temporary orders cleared before void:', deleteData);
+			if (deleteData.error && deleteData.message !== 'No orders found to delete.') { // Allow 'No orders' message
+				throw new Error('Failed to clear temporary orders: ' + (deleteData.message || deleteData.error));
+			}
+
+
+			// 3. Re-insert the remaining items
+			if (orderedItems.length > 0) {
+				await Promise.all(
+					orderedItems.map(item => {
+						return fetch(
+							'http://localhost/kaperustiko-possystem/backend/modules/insert.php?action=save_order',
+							{
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify(item)
+							}
+						).then(async response => { // Make inner function async
+							if (!response.ok) {
+								const errorText = await response.text();
+								console.error(`Failed to re-insert item after void: ${item.order_name}`, errorText);
+								throw new Error(`Failed to insert item ${item.order_name} after void: ${errorText}`);
+							}
+							return response.json();
+						});
+					})
+				);
+				console.log('Remaining items re-inserted successfully after void.');
+			} else {
+				console.log('No items left to re-insert after void.');
+			}
+
+			// 4. Fetch orders (optional but recommended)
+			// fetchOrders();
+
+		} catch (error) {
+			console.error('Error during void order process:', error);
+			fetchOrders(); // Attempt to resync
+		}
+
+
+		/* --- Remove old logic ---
 		const orderToVoid = orderedItems[index]; // Get the order to void
 		orderedItems.splice(index, 1); // Remove from local array
 		localStorage.setItem('orderedItems', JSON.stringify(orderedItems)); // Update localStorage after voiding
@@ -891,6 +1059,7 @@
 			.catch((error) => {
 				console.error('Error voiding order:', error);
 			});
+		*/
 	}
 
 	function handleBackspace() {

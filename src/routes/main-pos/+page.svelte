@@ -590,49 +590,90 @@
 			}
 
 			// Then proceed with saving receipt data
-			const totalCost = parseFloat(localStorage.getItem('totalCost')!) || 0; // Get total cost
-			const serviceCharge = parseFloat(localStorage.getItem('serviceCharge')!) || 0; // Get service charge
-			const paymentAmount = parseFloat(localStorage.getItem('paymentAmount')!) || 0; // Get payment amount
-			const change = parseFloat(localStorage.getItem('change')!) || 0; // Get change
+			const totalCostStr = localStorage.getItem('totalCost');
+			const serviceChargeStr = localStorage.getItem('serviceCharge');
+			const paymentAmountStr = localStorage.getItem('paymentAmount');
+			const changeStr = localStorage.getItem('change');
+			const cashierShift = localStorage.getItem('selectedShift');
+			const salesCode = localStorage.getItem('shiftCode');
 
-			// Retrieve cashier_shift and sales_code from local storage
-			const cashierShift = localStorage.getItem('selectedShift'); // Retrieve cashier_shift
-			const salesCode = localStorage.getItem('shiftCode'); // Retrieve sales_code
+			console.log('--- Retrieved from localStorage ---');
+			console.log('totalCostStr:', totalCostStr);
+			console.log('serviceChargeStr:', serviceChargeStr);
+			console.log('paymentAmountStr:', paymentAmountStr);
+			console.log('changeStr:', changeStr);
+			console.log('cashierShift:', cashierShift);
+			console.log('salesCode:', salesCode);
+			console.log('----------------------------------');
+			console.log('--- Component State ---');
+			console.log('orderNumber:', orderNumber);
+			console.log('cashierName:', cashierName);
+			console.log('waiterName:', waiterName);
+			console.log('selectedCard:', selectedCard);
+			console.log('isTakeOut:', isTakeOut);
+			console.log('orderedItems count:', orderedItems.length);
+			console.log('-----------------------');
+
+
+			const totalCost = parseFloat(totalCostStr!) || 0; // Get total cost
+			const serviceCharge = parseFloat(serviceChargeStr!) || 0; // Get service charge
+			const paymentAmount = parseFloat(paymentAmountStr!) || 0; // Get payment amount
+			const change = parseFloat(changeStr!) || 0; // Get change
+			
+			// Provide default values for cashierShift and salesCode if they're null
+			const effectiveCashierShift = cashierShift || "Default Shift";
+			const effectiveSalesCode = salesCode || "DEFAULT001";
+
+			// Validate numeric values
+			if (isNaN(totalCost) || isNaN(serviceCharge) || isNaN(paymentAmount) || isNaN(change)) {
+				showAlert('Error: Invalid numeric data retrieved for receipt.', 'error');
+				console.error('Invalid numeric data:', { totalCost, serviceCharge, paymentAmount, change });
+				return; // Stop execution
+			}
+
+			// Standardize date and time
+			const now = new Date();
+			const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+			const formattedTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
 
 			const receiptData = {
 				receiptNumber: orderNumber,
-				date: new Date().toLocaleDateString(),
-				time: new Date().toLocaleTimeString(),
+				date: formattedDate, // Use standardized date
+				time: formattedTime, // Use standardized time
 				cashierName: cashierName,
 				waiter_name: waiterName,
 				table_number: selectedCard?.table || 'Take Out',
 				order_take: isTakeOut ? 'Take Out' : 'Dine In',
-				amountPaid: paymentAmount, // Use retrieved payment amount
-				change: change, // Use retrieved change
-				service_charge: serviceCharge, // Use retrieved service charge
-				totalAmount: totalCost, // Use retrieved total cost
+				amountPaid: paymentAmount, // Use parsed number
+				change: change, // Use parsed number
+				service_charge: serviceCharge, // Use parsed number
+				totalAmount: totalCost, // Use parsed number
 				itemsOrdered: orderedItems.map(item => ({
 					order_name: item.order_name,
 					order_quantity: item.order_quantity,
 					basePrice: item.basePrice,
 					// Add other necessary fields here
 				})),
-				cashier_shift: cashierShift, // Add cashier_shift to receiptData
-				sales_code: salesCode // Add sales_code to receiptData
+				cashier_shift: effectiveCashierShift, // Use the non-null value
+				sales_code: effectiveSalesCode // Use the non-null value
 			};
 
-			console.log('Data to be sent in insertReceipt:', receiptData); // Log the data being sent
+			console.log('Final receiptData to be sent:', receiptData); // Log the final data being sent
 			const response = await fetch('http://localhost/kaperustiko-possystem/backend/modules/insert.php?action=insertReceipt', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify(receiptData)
-			});
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(receiptData)
+				});
 
 			const data = await response.json();
-			if (data.error) {
-				throw new Error(data.error);
+			// Add logging for the raw response from the backend
+			console.log('Backend response for insertReceipt:', data); 
+			if (!response.ok || data.error) { // Check response.ok as well
+				// Throw a more specific error including the backend message
+				throw new Error(data.error || `Failed to insert receipt. Status: ${response.status}`); 
 			}
 
 			// Clear waiter name from local storage
@@ -661,7 +702,7 @@
 
 			window.location.reload();
 		} catch (error: any) {
-			console.error('Error:', error);
+			console.error('Error in printReceipt:', error); // Log the specific error object
 			showAlert(error.message || 'Failed to process receipt.', 'error');
 		}
 	}
@@ -1616,16 +1657,10 @@
 
 			<div class="mt-6 flex justify-center space-x-4">
 				<button 
-					on:click={() => previewReceipt()} 
-					class="rounded-md bg-blue-500 px-6 py-2 text-white transition hover:bg-blue-600"
-				>
-					Preview Receipt
-				</button>
-				<button 
 					on:click={() => printReceipt()} 
 					class="rounded-md bg-green-500 px-6 py-2 text-white transition hover:bg-green-600"
 				>
-					Print & Save
+						Print & Save
 				</button>
 				<button 
 					on:click={() => isReceiptPopupVisible = false} 

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { FontAwesomeIcon } from "@fortawesome/svelte-fontawesome";
-    import { faStar, faUndo, faExclamationTriangle, faTrash, faDollarSign, faPrint, faArrowDown, faChartBar, faTrophy, faExclamationCircle, faTrashAlt, faUser } from "@fortawesome/free-solid-svg-icons";
+    import { faStar, faUndo, faExclamationTriangle, faTrash, faDollarSign, faPrint, faArrowDown, faChartBar, faTrophy, faExclamationCircle, faTrashAlt, faUser, faFileAlt, faCalendar } from "@fortawesome/free-solid-svg-icons";
     import Sidebar from "../sidebar/+page.svelte";
     import { Chart, LineController, LineElement, PointElement, LinearScale, Title, Tooltip, Legend, CategoryScale, Filler, BarController, BarElement, ArcElement, DoughnutController } from 'chart.js';
 
@@ -38,6 +38,29 @@
     let leadingStaff: { firstName: string; lastName: string } | null = null; // Variable to store leading staff data
     let showPopup = false; // State to control popup visibility
     let popupData: any = null; // State to hold data for the popup
+
+    // Add Z-Report related variables
+    let showZReportModal = false; // Control Z-report modal visibility
+    let zReportDate = new Date();
+    let zReportDateString = new Date().toISOString().split('T')[0]; // Default to today's date
+    let zReportData: any = null; // Data for Z-report
+    let isLoadingZReport = false; // Loading state for Z-report
+    let zReportError: string | null = null; // Error message for Z-report
+
+    // Utility function to safely format numbers
+    function safeNumberFormat(value: any, decimals: number = 2): string {
+        if (value === null || value === undefined) return '0.00';
+        const num = Number(value);
+        return isNaN(num) ? '0.00' : num.toFixed(decimals);
+    }
+
+    // Function to format date for input field (YYYY-MM-DD)
+    function formatDateForInput(date: Date): string {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
 
     onMount(async () => {
         const today = new Date();
@@ -361,6 +384,361 @@
         popupData = null; // Clear the data
     }
 
+    // Function to open Z-Report modal
+    function openZReportModal() {
+        zReportDate = new Date(); // Reset to today
+        zReportDateString = formatDateForInput(zReportDate);
+        showZReportModal = true;
+    }
+
+    // Function to close Z-Report modal
+    function closeZReportModal() {
+        showZReportModal = false;
+        zReportData = null;
+        zReportError = null;
+    }
+
+    // Function to fetch Z-Report data
+    async function fetchZReportData() {
+        try {
+            isLoadingZReport = true;
+            zReportError = null;
+            
+            // Parse the date string to get a Date object
+            zReportDate = new Date(zReportDateString);
+            
+            // Format the date as MM/DD/YYYY
+            const formattedDate = `${zReportDate.getMonth() + 1}/${zReportDate.getDate()}/${zReportDate.getFullYear()}`;
+            
+            const response = await fetch(`http://localhost/kaperustiko-possystem/backend/modules/get.php?action=getZReportData&date=${formattedDate}`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            zReportData = await response.json();
+            console.log("Z-Report data:", zReportData);
+        } catch (error) {
+            console.error("Error fetching Z-report data:", error);
+            zReportError = "Failed to fetch Z-report data. Please try again.";
+        } finally {
+            isLoadingZReport = false;
+        }
+    }
+
+    // Function to print Z-Report
+    async function printZReport() {
+        if (!zReportData) {
+            zReportError = "No data to print. Please fetch the report first.";
+            return;
+        }
+        
+        try {
+            const response = await fetch('http://localhost/kaperustiko-possystem/src/routes/z_report_printer.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    ...zReportData,
+                    cashier_name: localStorage.getItem('userName') || 'Admin',
+                    includeFoodItemsSummary: true, // Always include food items
+                    includeOrderMonitorChart: true, // Always include order monitor chart
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                alert("Z-Report printed successfully!");
+                closeZReportModal();
+            } else {
+                throw new Error(result.message);
+            }
+        } catch (error) {
+            console.error("Error printing Z-report:", error);
+            zReportError = "Failed to print Z-report. Please make sure the printer is connected and try again.";
+        }
+    }
+
+    // Function to open print preview in a new window
+    function openPrintPreview() {
+        if (!zReportData) {
+            zReportError = "No data to print. Please fetch the report first.";
+            return;
+        }
+
+        // Format date and time for display
+        const today = new Date();
+        const formattedDate = today.toLocaleDateString();
+        const formattedTime = today.toLocaleTimeString();
+
+        // Create the print window
+        const printWindow = window.open('', '_blank', 'width=800,height=600');
+        if (!printWindow) {
+            zReportError = "Failed to open print preview window. Please check your pop-up blocker settings.";
+            return;
+        }
+
+        // Write the HTML content for printing
+        printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Z-Report - ${zReportData.report_date}</title>
+                <style>
+                    body {
+                        font-family: 'Courier New', monospace;
+                        margin: 0;
+                        padding: 20px;
+                        max-width: 800px;
+                        margin: 0 auto;
+                    }
+                    .header {
+                        text-align: center;
+                        margin-bottom: 20px;
+                    }
+                    .title {
+                        font-size: 20px;
+                        font-weight: bold;
+                        margin-bottom: 5px;
+                    }
+                    .subtitle {
+                        font-size: 16px;
+                        margin-bottom: 5px;
+                    }
+                    .report-header {
+                        font-size: 18px;
+                        font-weight: bold;
+                        text-align: center;
+                        margin: 15px 0;
+                        border-bottom: 1px solid black;
+                        padding-bottom: 5px;
+                    }
+                    .section {
+                        margin-bottom: 20px;
+                    }
+                    .section-title {
+                        font-weight: bold;
+                        font-size: 16px;
+                        margin-bottom: 10px;
+                        border-bottom: 1px dashed #ccc;
+                        padding-bottom: 5px;
+                    }
+                    .row {
+                        display: flex;
+                        justify-content: space-between;
+                        margin-bottom: 5px;
+                    }
+                    .divider {
+                        border-top: 1px dashed #ccc;
+                        margin: 15px 0;
+                    }
+                    .footer {
+                        text-align: center;
+                        margin-top: 30px;
+                        font-size: 14px;
+                    }
+                    table {
+                        width: 100%;
+                        border-collapse: collapse;
+                    }
+                    th, td {
+                        padding: 8px;
+                        text-align: left;
+                    }
+                    th {
+                        border-bottom: 1px solid #000;
+                    }
+                    td {
+                        border-bottom: 1px dashed #ccc;
+                    }
+                    .value {
+                        text-align: right;
+                    }
+                    @media print {
+                        body {
+                            padding: 0;
+                            margin: 0;
+                        }
+                        button {
+                            display: none;
+                        }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div class="title">KAPE RUSTIKO</div>
+                    <div class="subtitle">Cafe and Restaurant</div>
+                    <div>Dewey Ave, Subic Bay Freeport Zone</div>
+                    <div>VAT REG TIN: 123-456-789-12345</div>
+                </div>
+                
+                <div class="report-header">Z-READING REPORT</div>
+                
+                <div class="section">
+                    <div class="row">
+                        <div>Report Date:</div>
+                        <div>${zReportData.report_date}</div>
+                    </div>
+                    <div class="row">
+                        <div>Printed:</div>
+                        <div>${formattedDate} ${formattedTime}</div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">SHIFT SUMMARY</div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Shift</th>
+                                <th class="value">Sales</th>
+                                <th class="value">Trans</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Morning Shift Duty</td>
+                                <td class="value">₱${safeNumberFormat(zReportData.shifts.morning.sales)}</td>
+                                <td class="value">${zReportData.shifts.morning.transactions}</td>
+                            </tr>
+                            <tr>
+                                <td>Night Shift Duty</td>
+                                <td class="value">₱${safeNumberFormat(zReportData.shifts.night.sales)}</td>
+                                <td class="value">${zReportData.shifts.night.transactions}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">SALES SUMMARY</div>
+                    <div class="row">
+                        <div>Gross Sales:</div>
+                        <div>₱${safeNumberFormat(zReportData.gross_sales)}</div>
+                    </div>
+                    <div class="row">
+                        <div>Cash Sales:</div>
+                        <div>₱${safeNumberFormat(zReportData.cash_sales)}</div>
+                    </div>
+                    <div class="row">
+                        <div>PWD/Senior Discount:</div>
+                        <div>₱${safeNumberFormat(zReportData.pwd_senior_discount)}</div>
+                    </div>
+                    <div class="row">
+                        <div>Service Charge:</div>
+                        <div>₱${safeNumberFormat(zReportData.service_charge)}</div>
+                    </div>
+                    <div class="row">
+                        <div>Zero Rated Sales:</div>
+                        <div>₱${safeNumberFormat(zReportData.zero_rated_sales)}</div>
+                    </div>
+                    <div class="row">
+                        <div>VAT Exempted Sales:</div>
+                        <div>₱${safeNumberFormat(zReportData.vat_exempted_sales)}</div>
+                    </div>
+                    <div class="row">
+                        <div>Vatable Sales:</div>
+                        <div>₱${safeNumberFormat(zReportData.vatable_sales)}</div>
+                    </div>
+                    <div class="row">
+                        <div>VAT:</div>
+                        <div>₱${safeNumberFormat(zReportData.vat)}</div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">RECEIPT RANGE</div>
+                    <div class="row">
+                        <div>Start Receipt:</div>
+                        <div>${zReportData.start_receipt}</div>
+                    </div>
+                    <div class="row">
+                        <div>End Receipt:</div>
+                        <div>${zReportData.end_receipt}</div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">VOIDS & TRANSACTIONS</div>
+                    <div class="row">
+                        <div>Void Items:</div>
+                        <div>${zReportData.void_items}</div>
+                    </div>
+                    <div class="row">
+                        <div>Voided Amount:</div>
+                        <div>₱${safeNumberFormat(zReportData.voided_amount)}</div>
+                    </div>
+                    <div class="row">
+                        <div>Transactions:</div>
+                        <div>${zReportData.num_transactions}</div>
+                    </div>
+                    <div class="row">
+                        <div>Net Sales:</div>
+                        <div>₱${safeNumberFormat(zReportData.net_sales)}</div>
+                    </div>
+                    <div class="row">
+                        <div>Running Total:</div>
+                        <div>₱${safeNumberFormat(zReportData.running_total)}</div>
+                    </div>
+                </div>
+                
+                <!-- Food Items Summary Section -->
+                <div class="section">
+                    <div class="section-title">FOOD ITEMS SUMMARY</div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Item Name</th>
+                                <th class="value">Quantity</th>
+                                <th class="value">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${zReportData.food_items && zReportData.food_items.length > 0 ? 
+                                zReportData.food_items.map(item => `
+                                    <tr>
+                                        <td>${item.name}</td>
+                                        <td class="value">${item.quantity}</td>
+                                        <td class="value">₱${safeNumberFormat(item.amount)}</td>
+                                    </tr>
+                                `).join('') : 
+                                `<tr><td colspan="3" style="text-align: center;">No food items data available</td></tr>`
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                
+                <!-- Order Monitor Chart Section -->
+                <div class="section">
+                    <div class="section-title">ORDER MONITOR CHART</div>
+                    <div style="margin: 20px auto; max-width: 600px; text-align: center;">
+                        ${zReportData.order_chart_image ? 
+                            `<img src="${zReportData.order_chart_image}" alt="Order Monitor Chart" style="max-width: 100%;">` :
+                            `<p>Order Monitor Chart data not available</p>`
+                        }
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    *** End of Z-Report ***<br>
+                    Printed by: ${localStorage.getItem('userName') || 'Admin'}
+                </div>
+                
+                <div style="text-align: center; margin-top: 20px;">
+                    <button onclick="window.print(); return false;" style="padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Print Report</button>
+                </div>
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
+    }
 </script>
 
 <div class="flex h-screen bg-gradient-to-b from-green-500 to-green-700">
@@ -414,8 +792,16 @@
             </div>
         </div>
 
-         <!-- Date Sorter -->
-         
+        <!-- Add Z-Report Button -->
+        <div class="mb-6 flex justify-end">
+            <button 
+                class="bg-blue-600 text-white px-4 py-2 rounded-md flex items-center hover:bg-blue-700 transition duration-200"
+                on:click={openZReportModal}
+            >
+                <FontAwesomeIcon icon={faFileAlt} class="mr-2" />
+                Generate Z-Report
+            </button>
+        </div>
 
         <!-- Charts Section -->
         <div class="grid grid-cols-3 gap-2 mb-6">
@@ -595,6 +981,160 @@
                     class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
                     on:click={() => itemToDelete && deleteReturn(itemToDelete)}>
                     Delete
+                </button>
+            </div>
+        </div>
+    </div>
+{/if}
+
+<!-- Z-Report Modal -->
+{#if showZReportModal}
+    <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white p-6 rounded-lg shadow-lg max-w-2xl w-full">
+            <h3 class="text-xl font-bold mb-4 text-gray-800">Z-Reading Report</h3>
+            
+            <div class="mb-4">
+                <label for="z-report-date" class="block text-sm font-medium text-gray-700 mb-1">Select Date</label>
+                <div class="flex items-center">
+                    <input 
+                        type="date" 
+                        id="z-report-date" 
+                        class="border rounded-md px-3 py-2 w-full"
+                        bind:value={zReportDateString}
+                    />
+                    <button 
+                        class="ml-2 bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 transition duration-200 flex items-center"
+                        on:click={fetchZReportData}
+                        disabled={isLoadingZReport}
+                    >
+                        <FontAwesomeIcon icon={faCalendar} class="mr-2" />
+                        {isLoadingZReport ? 'Loading...' : 'Get Report'}
+                    </button>
+                </div>
+            </div>
+            
+            {#if zReportError}
+                <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+                    {zReportError}
+                </div>
+            {/if}
+            
+            {#if zReportData}
+                <div class="bg-gray-100 p-4 rounded-lg mb-4 max-h-96 overflow-y-auto">
+                    <h4 class="font-bold text-lg mb-2">Z-Report Summary</h4>
+                    
+                    <div class="mb-4">
+                        <h5 class="font-semibold text-md mb-1">Shift Summary</h5>
+                        <table class="w-full">
+                            <thead>
+                                <tr class="bg-gray-200">
+                                    <th class="p-2 text-left">Shift</th>
+                                    <th class="p-2 text-right">Sales</th>
+                                    <th class="p-2 text-right">Transactions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td class="p-2">Morning Shift Duty</td>
+                                    <td class="p-2 text-right">₱{safeNumberFormat(zReportData.shifts.morning.sales)}</td>
+                                    <td class="p-2 text-right">{zReportData.shifts.morning.transactions}</td>
+                                </tr>
+                                <tr>
+                                    <td class="p-2">Night Shift Duty</td>
+                                    <td class="p-2 text-right">₱{safeNumberFormat(zReportData.shifts.night.sales)}</td>
+                                    <td class="p-2 text-right">{zReportData.shifts.night.transactions}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h5 class="font-semibold text-md mb-1">Sales Summary</h5>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div class="p-2 flex justify-between">
+                                <span>Gross Sales:</span>
+                                <span>₱{safeNumberFormat(zReportData.gross_sales)}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>Cash Sales:</span>
+                                <span>₱{safeNumberFormat(zReportData.cash_sales)}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>PWD/Senior Discount:</span>
+                                <span>₱{safeNumberFormat(zReportData.pwd_senior_discount)}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>Service Charge:</span>
+                                <span>₱{safeNumberFormat(zReportData.service_charge)}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>Vatable Sales:</span>
+                                <span>₱{safeNumberFormat(zReportData.vatable_sales)}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>VAT:</span>
+                                <span>₱{safeNumberFormat(zReportData.vat)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h5 class="font-semibold text-md mb-1">Receipt Range</h5>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div class="p-2 flex justify-between">
+                                <span>Start Receipt:</span>
+                                <span>{zReportData.start_receipt}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>End Receipt:</span>
+                                <span>{zReportData.end_receipt}</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <h5 class="font-semibold text-md mb-1">Transactions Summary</h5>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div class="p-2 flex justify-between">
+                                <span>Number of Transactions:</span>
+                                <span>{zReportData.num_transactions}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>Net Sales:</span>
+                                <span>₱{safeNumberFormat(zReportData.net_sales)}</span>
+                            </div>
+                            <div class="p-2 flex justify-between">
+                                <span>Running Total:</span>
+                                <span>₱{safeNumberFormat(zReportData.running_total)}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="flex justify-end gap-2">
+                    <button 
+                        class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition duration-200 flex items-center"
+                        on:click={openPrintPreview}
+                    >
+                        <FontAwesomeIcon icon={faPrint} class="mr-2" />
+                        Print Preview
+                    </button>
+                    <button 
+                        class="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition duration-200 flex items-center"
+                        on:click={printZReport}
+                    >
+                        <FontAwesomeIcon icon={faPrint} class="mr-2" />
+                        Print to Thermal
+                    </button>
+                </div>
+            {/if}
+            
+            <div class="mt-4 flex justify-end">
+                <button 
+                    class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400 transition duration-200"
+                    on:click={closeZReportModal}
+                >
+                    Close
                 </button>
             </div>
         </div>
